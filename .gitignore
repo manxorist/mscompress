@@ -17,3 +17,4 @@ Makefile.in
 /src/msexpand
 /test/test.new
 /test/test.txt_
+/test/test.tx_

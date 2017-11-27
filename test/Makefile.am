@@ -12,4 +12,4 @@ EXTRA_DIST += \
 
 CLEANFILES = \
     test.new \
-    test.txt_
+    test.tx_

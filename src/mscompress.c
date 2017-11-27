@@ -21,7 +21,6 @@
 #include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
@@ -29,9 +28,6 @@
 #include <getopt.h>
 
 extern char *version_string;
-
-#define BSWAP32(x)             ((((x)&0xFF)<<24)+(((x)<<8)&0xFF0000)+\
-			        (((x)>>8)&0xFF00)+(((x)>>24)&0xFF))
 
 #define N 4096
 #define F 16
@@ -61,6 +57,7 @@ insert (int i, int run)
   p = &root[(unsigned char) buffer[i]];
   lson[i] = rson[i] = NIL;
 
+  c = 0;
   while ((j = *p) != NIL)
     {
       n = min (k, l);
@@ -137,25 +134,22 @@ delete (int z)
 }
 
 int
-getbyte (int f)
+getbyte (FILE * in)
 {
   unsigned char b;
 
-  /* Is there a better way?  */
-  if (read (f, &b, sizeof (b)) != 1)
+  if (fread (&b, 1, sizeof (b), in) != sizeof (b))
     return -1;
   return b;
 }
 
 int
-compress (int in, char *inname, int out, char *outname)
+compress (FILE * in, char *inname, FILE * out, char *outname)
 {
   int ch, i, run, len, match, size, mask;
   char buf[17];
-  struct stat st;
-  uint32_t magic1;
-  uint32_t magic2;
-  uint16_t magic3;
+  unsigned char headermagic[10];
+  unsigned char headersize[4];
   uint32_t filesize;
 
   /* 28.5 kB */
@@ -166,48 +160,46 @@ compress (int in, char *inname, int out, char *outname)
       return -1;
     }
 
-
-  if (fstat (in, &st) < 0)
+  if (fseek (in, 0, SEEK_END) < 0)
+    {
+      perror (inname);
+      return -1;
+    }
+  filesize = ftell (in);
+  if (fseek (in, 0, SEEK_SET) < 0)
     {
       perror (inname);
       return -1;
     }
 
   /* Fill in header */
-#ifdef WORDS_BIGENDIAN		/* Sparc, MC68000, PPC, ... */
-  magic1 = 0x535A4444;		/* SZDD */
-  magic2 = 0x88f02733;
-  magic3 = 0x4100;
-  filesize = BSWAP32 (st.st_size);
-#else				/* Intel, VAX, ... */
-  magic1 = 0x44445A53L;		/* SZDD */
-  magic2 = 0x3327F088L;
-  magic3 = 0x0041;
-  filesize = st.st_size;
-#endif
+  headermagic[0+0] = 0x53;	/* SZDD */
+  headermagic[0+1] = 0x5A;
+  headermagic[0+2] = 0x44;
+  headermagic[0+3] = 0x44;
+
+  headermagic[4+0] = 0x88;
+  headermagic[4+1] = 0xf0;
+  headermagic[4+2] = 0x27;
+  headermagic[4+3] = 0x33;
+
+  headermagic[8+0] = 0x41;
+  headermagic[8+1] = inname[strlen (inname) - 1];
+
+  headersize[0] = (filesize >>  0) & 0xff;
+  headersize[1] = (filesize >>  8) & 0xff;
+  headersize[2] = (filesize >> 16) & 0xff;
+  headersize[3] = (filesize >> 24) & 0xff;
 
   /* Write header to the output file */
-  if (write (out, &magic1, sizeof (magic1)) != sizeof (magic1))
-    {
-      perror (outname);
-      free (buffer);
-      return -1;
-    }
-  if (write (out, &magic2, sizeof (magic2)) != sizeof (magic2))
+  if (fwrite (headermagic, 1, sizeof (headermagic), out) != sizeof (headermagic))
     {
       perror (outname);
       free (buffer);
       return -1;
     }
 
-  if (write (out, &magic3, sizeof (magic3)) != sizeof (magic3))
-    {
-      perror (outname);
-      free (buffer);
-      return -1;
-    }
-
-  if (write (out, &filesize, sizeof (filesize)) != sizeof (filesize))
+  if (fwrite (headersize, 1, sizeof (headersize), out) != sizeof (headersize))
     {
       perror (outname);
       free (buffer);
@@ -265,7 +257,7 @@ compress (int in, char *inname, int out, char *outname)
 	    }
 	  if (!((mask += mask) & 0xFF))
 	    {
-	      if (write (out, buf, size) != size)
+	      if (fwrite (buf, 1, size, out) != size)
 		{
 		  perror (outname);
 		  free (buffer);
@@ -280,7 +272,7 @@ compress (int in, char *inname, int out, char *outname)
   while (len > 0);
 
   if (size > 1)
-    if (write (out, buf, size) != size)
+    if (fwrite (buf, 1, size, out) != size)
       {
 	perror (outname);
 	free (buffer);
@@ -306,10 +298,10 @@ usage (char *progname)
 int
 main (int argc, char **argv)
 {
-  int in, out;
+  FILE *in, *out;
   char *argv0;
   int c;
-  char name[0x100];
+  char *name;
 
   argv0 = argv[0];
 
@@ -351,26 +343,35 @@ main (int argc, char **argv)
 	  continue;
 	}
 
-      in = open (argv[0], O_RDONLY);
-      if (in < 0)
+      in = fopen (argv[0], "rb");
+      if (in == NULL)
 	{
 	  perror (argv[0]);
 	  return 1;
 	}
 
+      name = malloc (strlen (argv[0]) + 1);
+      if (name == NULL)
+        {
+          perror (argv[0]);
+          return 1;
+        }
       strcpy (name, argv[0]);
-      strcat (name, "_");
+      name[strlen (name) - 1] = '_';
 
-      out = open (name, O_WRONLY | O_CREAT | O_EXCL, 0644);
-      if (out < 0)
+      out = fopen (name, "w+b");
+      if (out == NULL)
 	{
 	  perror (name);
 	  return 1;
 	}
 
       compress (in, argv[0], out, name);
-      close (in);
-      close (out);
+
+      free (name);
+
+      fclose (in);
+      fclose (out);
 
       argc--;
       argv++;
