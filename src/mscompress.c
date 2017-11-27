@@ -339,6 +339,10 @@ main (int argc, char **argv)
 
   while (argc)
     {
+      if (strlen (argv[0]) < 1)
+        {
+          continue;
+        }
       if (argv[0][strlen (argv[0]) - 1] == '_')
 	{
 	  fprintf (stderr, "%s: Already ends with underscore -- ignored\n", argv[0]);
