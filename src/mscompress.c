@@ -144,7 +144,7 @@ getbyte (FILE * in)
 }
 
 int
-compress (FILE * in, char *inname, FILE * out, char *outname)
+compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
 {
   int ch, i, run, len, match, size, mask;
   char buf[17];
@@ -191,19 +191,23 @@ compress (FILE * in, char *inname, FILE * out, char *outname)
   headersize[2] = (filesize >> 16) & 0xff;
   headersize[3] = (filesize >> 24) & 0xff;
 
-  /* Write header to the output file */
-  if (fwrite (headermagic, 1, sizeof (headermagic), out) != sizeof (headermagic))
+  if (!raw)
     {
-      perror (outname);
-      free (buffer);
-      return -1;
-    }
 
-  if (fwrite (headersize, 1, sizeof (headersize), out) != sizeof (headersize))
-    {
-      perror (outname);
-      free (buffer);
-      return -1;
+      /* Write header to the output file */
+      if (fwrite (headermagic, 1, sizeof (headermagic), out) != sizeof (headermagic))
+        {
+          perror (outname);
+          free (buffer);
+          return -1;
+        }
+
+      if (fwrite (headersize, 1, sizeof (headersize), out) != sizeof (headersize))
+        {
+          perror (outname);
+          free (buffer);
+          return -1;
+        }
     }
 
   node = (int *) (buffer + N + F);
@@ -286,9 +290,11 @@ compress (FILE * in, char *inname, FILE * out, char *outname)
 void
 usage (char *progname)
 {
-  printf ("Usage: %s [-h] [-V] [file ...]\n"
+  printf ("Usage: %s [-h] [-V] [-c] [file ...]\n"
 	  " -h --help        give this help\n"
 	  " -V --version     display version number\n"
+	  " -c               compress to stdout\n"
+	  " -r               comress to raw stream without file header\n"
 	  " file...          files to compress."
 	  "\n"
 	  "Report bugs to <mhi@penguin.cz>\n", progname);
@@ -302,10 +308,14 @@ main (int argc, char **argv)
   char *argv0;
   int c;
   char *name;
+  int usestdout;
+  int raw;
 
   argv0 = argv[0];
 
-  while ((c = getopt (argc, argv, "hV")) != -1)
+  usestdout = 0;
+  raw = 0;
+  while ((c = getopt (argc, argv, "hVcr")) != -1)
     {
       switch (c)
 	{
@@ -315,6 +325,12 @@ main (int argc, char **argv)
 	  printf ("mscompress version %s "__DATE__ " \n",
 			version_string);
 	  return 0;
+	case 'c':
+	  usestdout = 1;
+	  break;
+	case 'r':
+	  raw = 1;
+	  break;
 	default:
 	  usage (argv0);
 	}
@@ -326,6 +342,12 @@ main (int argc, char **argv)
   if (argc == 0)
     {
       fprintf (stderr, "%s: No files specified\n", argv0);
+      usage (argv0);
+    }
+
+  if (usestdout && argc != 1)
+    {
+      fprintf (stderr, "%s: -c requires exactly 1 file specified\n", argv0);
       usage (argv0);
     }
 
@@ -359,19 +381,35 @@ main (int argc, char **argv)
       strcpy (name, argv[0]);
       name[strlen (name) - 1] = '_';
 
-      out = fopen (name, "w+b");
+      if (usestdout)
+        {
+          out = stdout;
+        }
+      if (!usestdout)
+        {
+          out = fopen (name, "w+b");
+        }
       if (out == NULL)
 	{
 	  perror (name);
 	  return 1;
 	}
 
-      compress (in, argv[0], out, name);
+      compress (in, argv[0], out, name, raw);
+
+      if (fflush (out) != 0)
+        {
+          perror (name);
+          return 1;
+        }
 
       free (name);
 
       fclose (in);
-      fclose (out);
+      if (!usestdout)
+        {
+          fclose (out);
+        }
 
       argc--;
       argv++;
