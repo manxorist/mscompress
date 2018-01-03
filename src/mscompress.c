@@ -33,41 +33,44 @@ extern char *version_string;
 #define F 16
 #define THRESHOLD 3
 
-#define dad (node+1)
-#define lson (node+1+N)
-#define rson (node+1+N+N)
-#define root (node+1+N+N+N)
-#define NIL -1
+typedef struct state
+{
+  char buffer[N + F];
+  int tree[N + 1 + N + N + 256];
+  int pos;
+} state;
 
-char *buffer;
-int *node;
-int pos;
+#define dad (self->tree+1)
+#define lson (self->tree+1+N)
+#define rson (self->tree+1+N+N)
+#define root (self->tree+1+N+N+N)
+#define NIL -1
 
 #define max(x,y) ((x)>(y)?(x):(y))
 #define min(x,y) ((y)>(x)?(x):(y))
 
-int
-insert (int i, int run)
+static int
+tree_insert (state *self, int i, int run)
 {
   int c, j, k, l, n, match;
   int *p;
 
   k = l = 1;
   match = THRESHOLD - 1;
-  p = &root[(unsigned char) buffer[i]];
+  p = &root[(unsigned char) self->buffer[i]];
   lson[i] = rson[i] = NIL;
 
   c = 0;
   while ((j = *p) != NIL)
     {
       n = min (k, l);
-      while (n < run && (c = (buffer[j + n] - buffer[i + n])) == 0)
+      while (n < run && (c = (self->buffer[j + n] - self->buffer[i + n])) == 0)
 	n++;
 
       if (n > match)
 	{
 	  match = n;
-	  pos = j;
+	  self->pos = j;
 	}
       if (c < 0)
 	{
@@ -82,20 +85,20 @@ insert (int i, int run)
       else
 	{
 	  dad[j] = NIL;
-	  dad[lson[j]] = lson + i - node;
-	  dad[rson[j]] = rson + i - node;
+	  dad[lson[j]] = lson + i - self->tree;
+	  dad[rson[j]] = rson + i - self->tree;
 	  lson[i] = lson[j];
 	  rson[i] = rson[j];
 	  break;
 	}
     }
-  dad[i] = p - node;
+  dad[i] = p - self->tree;
   *p = i;
   return match;
 }
 
-void
-delete (int z)
+static void
+tree_remove (state *self, int z)
 {
   int j;
 
@@ -119,16 +122,16 @@ delete (int z)
 		  j = rson[j];
 		}
 	      while (rson[j] != NIL);
-	      node[dad[j]] = lson[j];
+	      self->tree[dad[j]] = lson[j];
 	      dad[lson[j]] = dad[j];
 	      lson[j] = lson[z];
-	      dad[lson[z]] = lson + j - node;
+	      dad[lson[z]] = lson + j - self->tree;
 	    }
 	  rson[j] = rson[z];
-	  dad[rson[z]] = rson + j - node;
+	  dad[rson[z]] = rson + j - self->tree;
 	}
       dad[j] = dad[z];
-      node[dad[z]] = j;
+      self->tree[dad[z]] = j;
       dad[z] = NIL;
     }
 }
@@ -146,6 +149,7 @@ getbyte (FILE * in)
 int
 compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
 {
+  state *self;
   int ch, i, run, len, match, size, mask;
   char buf[17];
   unsigned char headermagic[10];
@@ -153,8 +157,8 @@ compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
   uint32_t filesize;
 
   /* 28.5 kB */
-  buffer = malloc (N + F + (N + 1 + N + N + 256) * sizeof (int));
-  if (!buffer)
+  self = malloc (sizeof (state));
+  if (!self)
     {
       fprintf (stderr, "%s: Not enough memory!\n", inname);
       return -1;
@@ -163,12 +167,14 @@ compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
   if (fseek (in, 0, SEEK_END) < 0)
     {
       perror (inname);
+      free (self);
       return -1;
     }
   filesize = ftell (in);
   if (fseek (in, 0, SEEK_SET) < 0)
     {
       perror (inname);
+      free (self);
       return -1;
     }
 
@@ -198,19 +204,18 @@ compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
       if (fwrite (headermagic, 1, sizeof (headermagic), out) != sizeof (headermagic))
         {
           perror (outname);
-          free (buffer);
+          free (self);
           return -1;
         }
 
       if (fwrite (headersize, 1, sizeof (headersize), out) != sizeof (headersize))
         {
           perror (outname);
-          free (buffer);
+          free (self);
           return -1;
         }
     }
 
-  node = (int *) (buffer + N + F);
   for (i = 0; i < 256; i++)
     root[i] = NIL;
   for (i = NIL; i < N; i++)
@@ -220,7 +225,7 @@ compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
   i = N - F - F;
   for (len = 0; len < F && (ch = getbyte (in)) != -1; len++)
     {
-      buffer[i + F] = ch;
+      self->buffer[i + F] = ch;
       i = (i + 1) % N;
     }
   run = len;
@@ -229,15 +234,15 @@ compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
       ch = getbyte (in);
       if (i >= N - F)
 	{
-	  delete (i + F - N);
-	  buffer[i + F] = buffer[i + F - N] = ch;
+	  tree_remove (self, i + F - N);
+	  self->buffer[i + F] = self->buffer[i + F - N] = ch;
 	}
       else
 	{
-	  delete (i + F);
-	  buffer[i + F] = ch;
+	  tree_remove (self, i + F);
+	  self->buffer[i + F] = ch;
 	}
-      match = insert (i, run);
+      match = tree_insert (self, i, run);
       if (ch == -1)
 	{
 	  run--;
@@ -248,15 +253,15 @@ compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
 	  if (match >= THRESHOLD)
 	    {
 //printf("%u{%u,%u}",size,pos, match-3);
-	      buf[size++] = pos;
-	      buf[size++] = ((pos >> 4) & 0xF0) + (match - 3);
+	      buf[size++] = self->pos;
+	      buf[size++] = ((self->pos >> 4) & 0xF0) + (match - 3);
 	      len -= match;
 	    }
 	  else
 	    {
 	      buf[0] |= mask;
-//printf("%u[%c]",size,buffer[i]);
-	      buf[size++] = buffer[i];
+//printf("%u[%c]",size,self->buffer[i]);
+	      buf[size++] = self->buffer[i];
 	      len--;
 	    }
 	  if (!((mask += mask) & 0xFF))
@@ -264,7 +269,7 @@ compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
 	      if (fwrite (buf, 1, size, out) != size)
 		{
 		  perror (outname);
-		  free (buffer);
+		  free (self);
 		  return -1;
 		}
 	      size = mask = 1;
@@ -279,11 +284,11 @@ compress (FILE * in, char *inname, FILE * out, char *outname, int raw)
     if (fwrite (buf, 1, size, out) != size)
       {
 	perror (outname);
-	free (buffer);
+	free (self);
 	return -1;
       }
 
-  free (buffer);
+  free (self);
   return 0;
 }
 
